@@ -1,0 +1,50 @@
+# === Core Framework ===
+fastapi==0.120.0
+uvicorn[standard]==0.38.0
+starlette==0.48.0
+
+# === Database & ORM ===
+SQLAlchemy==2.0.36
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
+alembic==1.13.2
+
+# === Validation & Settings ===
+pydantic[email]==2.12.3
+pydantic-settings==2.11.0
+python-dotenv==1.1.1
+
+# === Authentication & Forms ===
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.9
+
+# === HTTP Utilities ===
+requests==2.32.3
+httpx==0.28.1
+
+# === Logging & Utilities ===
+loguru==0.7.3
+
+# === Development Tools ===
+black==25.9.0
+isort==6.1.0
+ruff==0.14.2
+pytest==8.4.2
+pytest-asyncio==1.2.0
+
+# === Performance & Event Loop ===
+uvloop==0.22.1
+watchfiles==1.1.1
+websockets==15.0.1
+
+# === Type Helpers ===
+typing_extensions==4.15.0
+annotated-types==0.7.0
+
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
+python-multipart==0.0.9
+bcrypt==4.0.1
+
+APScheduler==3.10.4
+tzlocal>=4.3
