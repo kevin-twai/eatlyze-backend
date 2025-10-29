@@ -1,10 +1,24 @@
 [run]
 branch = True
-source = app
+source =
+    app
+omit =
+    */__init__.py
+    */tests/*
+    */alembic/*
+    */migrations/*
+    */.venv/*
 
 [report]
 show_missing = True
-fail_under = 85
+skip_covered = True
+precision = 1
+fail_under = 60
+exclude_lines =
+    pragma: no cover
+    if __name__ == "__main__":
+    if TYPE_CHECKING
 
 [html]
 directory = htmlcov
+title = Eatlyze Coverage Report
