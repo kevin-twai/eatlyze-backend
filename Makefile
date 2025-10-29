@@ -10,7 +10,11 @@ fmt:
 	isort .
 
 test:
-	pytest -q
+	pytest -q --cov=app --cov-report=term-missing
+
+test-html:
+	pytest --cov=app --cov-report=html
+	@echo "HTML coverage report generated at ./htmlcov/index.html"
 
 freeze:
 	pip freeze > requirements.txt

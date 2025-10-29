@@ -1,6 +1,5 @@
 # app/api/v1/endpoints/auth.py
-from typing import Dict, Optional, Tuple, List
-import time
+from typing import Dict, Optional, Tuple
 from datetime import datetime as dt
 
 from fastapi import APIRouter, Depends, HTTPException, status, Header, Request
@@ -21,68 +20,9 @@ from app.core.security import (
 )
 from app.schemas.auth import TokenPair, RefreshRequest
 from app.schemas.user import UserRead
+from app.services.rate_limit import check_limit_and_hit, reset_success
 
 router = APIRouter(tags=["auth"])
-
-# =========================
-# 簡版 Rate Limit（無套件）
-# =========================
-# 規則：同一 IP 每 10 分鐘最多 20 次登入請求；同一 email+IP 每 10 分鐘最多 5 次
-RATE_WINDOW_SECONDS = 10 * 60
-RATE_MAX_ATTEMPTS_IP = 20
-RATE_MAX_ATTEMPTS_EMAIL_IP = 5
-
-# in-memory 紀錄（多實例/重啟會重置；正式可改 Redis）
-_rate_buckets_ip: Dict[str, List[float]] = {}
-_rate_buckets_email_ip: Dict[str, List[float]] = {}
-
-def _prune_and_count(bucket: List[float], now: float) -> int:
-    """移除已過窗的紀錄，回傳窗口內的次數"""
-    threshold = now - RATE_WINDOW_SECONDS
-    while bucket and bucket[0] < threshold:
-        bucket.pop(0)
-    return len(bucket)
-
-def _hit(bucket: List[float], now: float) -> None:
-    bucket.append(now)
-
-def _check_rate_limit(ip: str, email: Optional[str]) -> Tuple[bool, int]:
-    """
-    回傳 (允許通過, 建議 Retry-After 秒數)
-    - 先檢查 IP，後檢查 email+IP
-    """
-    now = time.time()
-
-    # ---- IP 維度 ----
-    b_ip = _rate_buckets_ip.setdefault(ip, [])
-    cnt_ip = _prune_and_count(b_ip, now)
-    if cnt_ip >= RATE_MAX_ATTEMPTS_IP:
-        retry_after = int(max(1, RATE_WINDOW_SECONDS - (now - b_ip[0])))
-        return False, retry_after
-
-    # ---- email+IP 維度（避免帳號被暴力猜測）----
-    if email:
-        key = f"{email.lower()}|{ip}"
-        b_ei = _rate_buckets_email_ip.setdefault(key, [])
-        cnt_ei = _prune_and_count(b_ei, now)
-        if cnt_ei >= RATE_MAX_ATTEMPTS_EMAIL_IP:
-            retry_after = int(max(1, RATE_WINDOW_SECONDS - (now - b_ei[0])))
-            return False, retry_after
-
-    return True, 0
-
-def _record_attempt(ip: str, email: Optional[str]) -> None:
-    now = time.time()
-    _hit(_rate_buckets_ip.setdefault(ip, []), now)
-    if email:
-        key = f"{email.lower()}|{ip}"
-        _hit(_rate_buckets_email_ip.setdefault(key, []), now)
-
-def _reset_success(ip: str, email: Optional[str]) -> None:
-    """登入成功後，可選擇清空 email+IP 的紀錄，降低誤鎖風險（IP 維度保留，以防掃號）"""
-    if email:
-        key = f"{email.lower()}|{ip}"
-        _rate_buckets_email_ip.pop(key, None)
 
 
 def _extract_jti_and_exp(token: str) -> Tuple[Optional[str], Optional[int], Optional[str], Optional[str]]:
@@ -103,7 +43,7 @@ def _extract_jti_and_exp(token: str) -> Tuple[Optional[str], Optional[int], Opti
         return None, None, None, None
 
 
-# === 登入（含 Rate Limit） ===
+# === 登入（含 Redis Rate Limit） ===
 @router.post("/login", response_model=TokenPair)
 async def login(
     request: Request,
@@ -113,20 +53,18 @@ async def login(
     """
     使用者登入，簽發 Access / Refresh。
     security.py 會自動加入 type、jti、ver、exp。
-    *新增：Rate Limit（以 IP 與 email+IP 控制暴力嘗試）*
+    *改版：使用 Redis Sliding Window 限流*
     """
     ip = (request.client.host if request.client else "unknown") or "unknown"
     email = (form_data.username or "").strip()
-    allow, retry_after = _check_rate_limit(ip, email)
-    if not allow:
+
+    allowed, retry_after = await check_limit_and_hit(ip, email)
+    if not allowed:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many login attempts. Please try again later.",
             headers={"Retry-After": str(retry_after)},
         )
-
-    # 記一次嘗試（成功或失敗都算一次）
-    _record_attempt(ip, email)
 
     password = form_data.password
     result = await db.execute(select(User).where(User.email == email))
@@ -137,7 +75,7 @@ async def login(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
     # ✅ 登入成功後清空 email+IP 的嘗試（避免誤鎖）
-    _reset_success(ip, email)
+    await reset_success(ip, email)
 
     # ✅ 帶入當前 token_version 作為 ver
     access_token = create_access_token({"sub": str(user.id), "ver": user.token_version})
@@ -171,10 +109,9 @@ async def refresh_token(payload: RefreshRequest, db: AsyncSession = Depends(get_
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
-    # 🔒 關鍵補強：refresh 的 ver 必須與目前 user.token_version 一致
+    # 🔒 補強：refresh 的 ver 必須與目前 user.token_version 一致
     token_ver = claims.get("ver")
     if token_ver is None or int(token_ver) != int(user.token_version):
-        # 一律以同樣的訊息回覆，避免側錄到版本資訊
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
     # 帶入當前 token_version 簽發新 pair

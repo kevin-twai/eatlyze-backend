@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: eatlyze
+          POSTGRES_PASSWORD: eatlyze
+          POSTGRES_DB: eatlyze
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U eatlyze -d eatlyze"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping || exit 1"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=10
+
+    env:
+      APP_NAME: Eatlyze API
+      ENV: ci
+      DEBUG: "false"
+      API_V1_PREFIX: /api/v1
+      CORS_ORIGINS: '["*"]'
+      DATABASE_URL: postgresql+asyncpg://eatlyze:eatlyze@localhost:5432/eatlyze
+      DB_ECHO: "false"
+      SECRET_KEY: 9a1f4e2f7bbf2f9f2e7d7c1f9a2b0d4c9a1f4e2f7bbf2f9f2e7d7c1f9a2b0d4c
+      REFRESH_SECRET_KEY: 8b2e5d1c9f0a4b2d6e7f8a9c0b1d2e3f8b2e5d1c9f0a4b2d6e7f8a9c0b1d2e3f
+      JWT_ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: "60"
+      REFRESH_TOKEN_EXPIRE_MINUTES: "43200"
+      REDIS_URL: redis://localhost:6379/0
+      RATE_LIMIT_WINDOW_SEC: "600"
+      RATE_LIMIT_MAX_PER_IP: "200"
+      RATE_LIMIT_MAX_PER_EMAIL_IP: "50"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest-cov coverage
+
+      - name: DB migrate
+        run: alembic upgrade head
+
+      - name: Run tests with coverage
+        run: pytest -q --cov=app --cov-report=term-missing
+
+      - name: Upload coverage XML
+        if: always()
+        run: coverage xml -o coverage.xml || true
+
+      - name: Store coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml

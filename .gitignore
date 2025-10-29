@@ -223,3 +223,6 @@ __marimo__/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# macOS
+.DS_Store
