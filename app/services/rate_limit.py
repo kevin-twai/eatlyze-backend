@@ -5,14 +5,15 @@ import time
 from typing import Optional, Tuple
 
 from redis.asyncio import Redis
-from app.core.config import settings
+from app.core.config import settings as _settings
 
-# 讀取環境參數（.env / settings）
-WINDOW_SEC: int = int(getattr(settings, "RATE_LIMIT_WINDOW_SEC", 600))
-MAX_PER_IP: int = int(getattr(settings, "RATE_LIMIT_MAX_PER_IP", 200))
-MAX_PER_EMAIL_IP: int = int(getattr(settings, "RATE_LIMIT_MAX_PER_EMAIL_IP", 50))
+# ---- 參數（帶防呆預設，避免 CI 或測試環境漏 env 時爆掉）----
+REDIS_URL: str = getattr(_settings, "REDIS_URL", "redis://localhost:6379/0")
+WINDOW_SEC: int = int(getattr(_settings, "RATE_LIMIT_WINDOW_SEC", 600))
+MAX_PER_IP: int = int(getattr(_settings, "RATE_LIMIT_MAX_PER_IP", 200))
+MAX_PER_EMAIL_IP: int = int(getattr(_settings, "RATE_LIMIT_MAX_PER_EMAIL_IP", 50))
 
-# 單例 Redis 連線（async）
+# 單例 Redis（lazy-init）
 _redis: Optional[Redis] = None
 
 
@@ -21,9 +22,9 @@ def _get_redis() -> Redis:
     global _redis
     if _redis is None:
         _redis = Redis.from_url(
-            settings.REDIS_URL,
+            REDIS_URL,
             encoding="utf-8",
-            decode_responses=True,  # 用字串好除錯
+            decode_responses=True,  # 用字串便於除錯
         )
     return _redis
 
@@ -37,7 +38,7 @@ def _key_email_ip(email: str, ip: str) -> str:
 
 
 async def _prune(redis: Redis, key: str, now_s: float) -> None:
-    """移除滑動視窗外的紀錄（分數 < now - WINDOW_SEC）。"""
+    """移除滑動視窗外的紀錄（score < now - WINDOW_SEC）。"""
     await redis.zremrangebyscore(key, "-inf", now_s - WINDOW_SEC)
 
 
@@ -49,14 +50,14 @@ async def _oldest_ts(redis: Redis, key: str) -> Optional[float]:
     """取得窗口內最舊嘗試的時間戳（若無則 None）。"""
     data = await redis.zrange(key, 0, 0, withscores=True)
     if data:
-        # data 形如 [(member, score)]，我們把 score 存 epoch 秒
+        # 形式 [(member, score)]，score 為 epoch 秒
         return float(data[0][1])
     return None
 
 
 async def _hit(redis: Redis, key: str, now_s: float) -> None:
     """記錄一次嘗試（ZSET，score=now）。"""
-    member = f"{now_s:.3f}"  # 簡單用時間字串作成員，避免重複
+    member = f"{now_s:.3f}"  # 以當下時間字串作為 member，降低重複機率
     await redis.zadd(key, {member: now_s})
 
 
