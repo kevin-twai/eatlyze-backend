@@ -1,8 +1,45 @@
 # tests/test_auth_e2e.py
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
+
+from app.db.session import get_db
+from app.models.users import User
+
+# 優先沿用專案內的密碼雜湊；若無則用 passlib 後備
+try:
+    from app.core.security import get_password_hash  # type: ignore
+except Exception:  # pragma: no cover
+    from passlib.context import CryptContext
+    _pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+    def get_password_hash(p: str) -> str:
+        return _pwd_ctx.hash(p)
+
 
 pytestmark = pytest.mark.asyncio
+
+
+async def _ensure_user(email: str, password: str, name: str = "Kevin5") -> None:
+    """
+    確保測試帳號存在；沒有就建立。
+    透過專案現成 get_db() 取得 AsyncSession。
+    """
+    async for db in get_db():
+        session = db
+        break
+
+    res = await session.execute(select(User).where(User.email == email))
+    u = res.scalar_one_or_none()
+    if u is None:
+        u = User(
+            email=email,
+            name=name,
+            password_hash=get_password_hash(password),
+            token_version=0,
+        )
+        session.add(u)
+        await session.commit()
 
 
 async def _login_pair(client: AsyncClient, email: str, password: str):
@@ -33,31 +70,38 @@ async def _logout_all(client: AsyncClient, token: str):
 
 
 # ✅ 不需要自己定義 client fixture
-# pytest 會自動使用 tests/conftest.py 裡的 AsyncClient fixture
+# 會自動使用 tests/conftest.py 的 AsyncClient
 
 async def test_full_flow(client: AsyncClient):
-    """整合測試：登入 → me → 登出 → refresh → logout-all"""
-    # 先確保 DB 有這個使用者（你已有 test5@example.com）
-    access, refresh = await _login_pair(client, "test5@example.com", "MyStrongPass")
+    """整合測試：seed → login → me → logout → refresh → logout-all"""
+    email = "test5@example.com"
+    password = "MyStrongPass"
 
+    # 先 seed 使用者（CI 空 DB 也能跑）
+    await _ensure_user(email, password)
+
+    # 登入
+    access, refresh = await _login_pair(client, email, password)
+
+    # me OK
     r = await _me(client, access)
-    assert r.status_code == 200
+    assert r.status_code == 200, r.text
 
     # 單點登出 -> 舊 access 應失效
     r = await _logout(client, access)
-    assert r.status_code == 200
+    assert r.status_code == 200, r.text
     r = await _me(client, access)
     assert r.status_code in (401, 403)
 
     # 用 refresh 換新 pair -> 新 access 可用
     r = await _refresh(client, refresh)
-    assert r.status_code == 200
+    assert r.status_code == 200, r.text
     new_access = r.json()["access_token"]
     r = await _me(client, new_access)
-    assert r.status_code == 200
+    assert r.status_code == 200, r.text
 
     # 登出全部 -> new_access 立刻失效
     r = await _logout_all(client, new_access)
-    assert r.status_code == 200
+    assert r.status_code == 200, r.text
     r = await _me(client, new_access)
     assert r.status_code in (401, 403)
