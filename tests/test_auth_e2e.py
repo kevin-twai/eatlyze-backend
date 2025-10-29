@@ -1,9 +1,9 @@
 # tests/test_auth_e2e.py
 import pytest
 from httpx import AsyncClient
-from app.main import app
 
 pytestmark = pytest.mark.asyncio
+
 
 async def _login_pair(client: AsyncClient, email: str, password: str):
     r = await client.post(
@@ -15,24 +15,28 @@ async def _login_pair(client: AsyncClient, email: str, password: str):
     data = r.json()
     return data["access_token"], data["refresh_token"]
 
+
 async def _me(client: AsyncClient, token: str):
     return await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
+
 
 async def _logout(client: AsyncClient, token: str):
     return await client.post("/api/v1/auth/logout", headers={"Authorization": f"Bearer {token}"})
 
+
 async def _refresh(client: AsyncClient, refresh_token: str):
     return await client.post("/api/v1/auth/refresh", json={"refresh_token": refresh_token})
+
 
 async def _logout_all(client: AsyncClient, token: str):
     return await client.post("/api/v1/auth/logout-all", headers={"Authorization": f"Bearer {token}"})
 
-@pytest.fixture
-async def client():
-    async with AsyncClient(app=app, base_url="http://test") as c:
-        yield c
+
+# ✅ 不需要自己定義 client fixture
+# pytest 會自動使用 tests/conftest.py 裡的 AsyncClient fixture
 
 async def test_full_flow(client: AsyncClient):
+    """整合測試：登入 → me → 登出 → refresh → logout-all"""
     # 先確保 DB 有這個使用者（你已有 test5@example.com）
     access, refresh = await _login_pair(client, "test5@example.com", "MyStrongPass")
 
