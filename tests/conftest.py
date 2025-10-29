@@ -13,7 +13,7 @@ def anyio_backend():
 
 @pytest_asyncio.fixture
 async def client():
-    """建立可用的 AsyncClient，支援 lifespan"""
-    transport = ASGITransport(app=app, lifespan="on")
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+    """建立可用的 AsyncClient（新版 httpx 無 lifespan 參數）"""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
         yield ac
