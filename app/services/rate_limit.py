@@ -1,13 +1,20 @@
 # app/services/rate_limit.py
 from __future__ import annotations
 
+import os
 import time
 from typing import Optional, Tuple
 
 from redis.asyncio import Redis
 from app.core.config import settings as _settings
 
-# ---- 參數（帶防呆預設，避免 CI 或測試環境漏 env 時爆掉）----
+# ---- 環境旗標：測試時自動停用；也可用 RATE_LIMIT_ENABLED 顯式控制 ----
+_PYTEST_MODE = bool(os.getenv("PYTEST_CURRENT_TEST"))
+_RATE_LIMIT_ENABLED = bool(int(str(getattr(_settings, "RATE_LIMIT_ENABLED", 1))))
+if _PYTEST_MODE:
+    _RATE_LIMIT_ENABLED = False  # pytest 執行時關掉限流，避免 Redis 與事件圈干擾
+
+# ---- 參數（帶防呆預設，避免 CI / 測試漏 env 時爆掉）----
 REDIS_URL: str = getattr(_settings, "REDIS_URL", "redis://localhost:6379/0")
 WINDOW_SEC: int = int(getattr(_settings, "RATE_LIMIT_WINDOW_SEC", 600))
 MAX_PER_IP: int = int(getattr(_settings, "RATE_LIMIT_MAX_PER_IP", 200))
@@ -19,6 +26,9 @@ _redis: Optional[Redis] = None
 
 def _get_redis() -> Redis:
     """Lazy 初始化 Redis 連線。aioredis>=2 已合併到 redis-py（redis.asyncio）。"""
+    if not _RATE_LIMIT_ENABLED:
+        # 停用時理論上不應呼叫；若被誤用，明確拋錯幫助定位
+        raise RuntimeError("Rate limit is disabled in current environment")
     global _redis
     if _redis is None:
         _redis = Redis.from_url(
@@ -68,6 +78,10 @@ async def check_limit_and_hit(ip: str, email: Optional[str]) -> Tuple[bool, int]
       先看 IP 維度，再看 email+IP 維度。
       若超出，retry_after = 距離最舊紀錄出窗的剩餘秒數（>=1）。
     """
+    # 測試或停用狀態：直接放行，不碰 Redis
+    if not _RATE_LIMIT_ENABLED:
+        return True, 0
+
     r = _get_redis()
     now_s = time.time()
 
@@ -105,5 +119,7 @@ async def reset_success(ip: str, email: Optional[str]) -> None:
     """
     if not email:
         return
+    if not _RATE_LIMIT_ENABLED:
+        return  # 停用時無須清桶
     r = _get_redis()
     await r.delete(_key_email_ip(email, ip))
