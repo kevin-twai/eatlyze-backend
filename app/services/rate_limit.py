@@ -8,78 +8,69 @@ from typing import Optional, Tuple
 from redis.asyncio import Redis
 from app.core.config import settings as _settings
 
-# ---- 環境旗標：測試時自動停用；也可用 RATE_LIMIT_ENABLED 顯式控制 ----
-_PYTEST_MODE = bool(os.getenv("PYTEST_CURRENT_TEST"))
-_RATE_LIMIT_ENABLED = bool(int(str(getattr(_settings, "RATE_LIMIT_ENABLED", 1))))
-if _PYTEST_MODE:
-    _RATE_LIMIT_ENABLED = False  # pytest 執行時關掉限流，避免 Redis 與事件圈干擾
-
-# ---- 參數（帶防呆預設，避免 CI / 測試漏 env 時爆掉）----
+# ---- 參數（帶防呆預設）----
 REDIS_URL: str = getattr(_settings, "REDIS_URL", "redis://localhost:6379/0")
 WINDOW_SEC: int = int(getattr(_settings, "RATE_LIMIT_WINDOW_SEC", 600))
 MAX_PER_IP: int = int(getattr(_settings, "RATE_LIMIT_MAX_PER_IP", 200))
 MAX_PER_EMAIL_IP: int = int(getattr(_settings, "RATE_LIMIT_MAX_PER_EMAIL_IP", 50))
 
+# ---- 開關：可由 env 或 settings 控制；pytest 自動停用 ----
+def _is_pytest() -> bool:
+    return bool(
+        os.getenv("PYTEST_CURRENT_TEST")  # pytest 會設
+        or os.getenv("PYTEST") in ("1", "true", "True")
+        or getattr(_settings, "TESTING", False)
+    )
+
+_RATE_LIMIT_ENABLED: bool = str(getattr(_settings, "RATE_LIMIT_ENABLED", "1")) not in ("0", "false", "False")
+_DISABLE_FOR_TEST: bool = _is_pytest()
+
+def _enabled() -> bool:
+    # 測試時一律停用；否則看總開關
+    return _RATE_LIMIT_ENABLED and not _DISABLE_FOR_TEST
+
 # 單例 Redis（lazy-init）
 _redis: Optional[Redis] = None
 
-
 def _get_redis() -> Redis:
-    """Lazy 初始化 Redis 連線。aioredis>=2 已合併到 redis-py（redis.asyncio）。"""
-    if not _RATE_LIMIT_ENABLED:
-        # 停用時理論上不應呼叫；若被誤用，明確拋錯幫助定位
-        raise RuntimeError("Rate limit is disabled in current environment")
+    """Lazy 初始化 Redis 連線。只有在限流啟用時才會被呼叫。"""
     global _redis
     if _redis is None:
         _redis = Redis.from_url(
             REDIS_URL,
             encoding="utf-8",
-            decode_responses=True,  # 用字串便於除錯
+            decode_responses=True,
         )
     return _redis
-
 
 def _key_ip(ip: str) -> str:
     return f"rl:login:ip:{ip or 'unknown'}"
 
-
 def _key_email_ip(email: str, ip: str) -> str:
     return f"rl:login:ei:{(email or '').lower()}|{ip or 'unknown'}"
 
-
 async def _prune(redis: Redis, key: str, now_s: float) -> None:
-    """移除滑動視窗外的紀錄（score < now - WINDOW_SEC）。"""
     await redis.zremrangebyscore(key, "-inf", now_s - WINDOW_SEC)
-
 
 async def _count(redis: Redis, key: str) -> int:
     return int(await redis.zcard(key))
 
-
 async def _oldest_ts(redis: Redis, key: str) -> Optional[float]:
-    """取得窗口內最舊嘗試的時間戳（若無則 None）。"""
     data = await redis.zrange(key, 0, 0, withscores=True)
     if data:
-        # 形式 [(member, score)]，score 為 epoch 秒
         return float(data[0][1])
     return None
 
-
 async def _hit(redis: Redis, key: str, now_s: float) -> None:
-    """記錄一次嘗試（ZSET，score=now）。"""
-    member = f"{now_s:.3f}"  # 以當下時間字串作為 member，降低重複機率
+    member = f"{now_s:.3f}"
     await redis.zadd(key, {member: now_s})
-
 
 async def check_limit_and_hit(ip: str, email: Optional[str]) -> Tuple[bool, int]:
     """
-    檢查是否超出限流；若允許，會「順便記一次嘗試」。
-    回傳：(allowed, retry_after_seconds)
-      先看 IP 維度，再看 email+IP 維度。
-      若超出，retry_after = 距離最舊紀錄出窗的剩餘秒數（>=1）。
+    檢查是否超出限流；若允許會記一次嘗試。
+    測試或總開關關閉時，直接放行且不觸碰 Redis。
     """
-    # 測試或停用狀態：直接放行，不碰 Redis
-    if not _RATE_LIMIT_ENABLED:
+    if not _enabled():
         return True, 0
 
     r = _get_redis()
@@ -111,15 +102,11 @@ async def check_limit_and_hit(ip: str, email: Optional[str]) -> Tuple[bool, int]
 
     return True, 0
 
-
 async def reset_success(ip: str, email: Optional[str]) -> None:
     """
-    登入成功後清空 email+IP 的桶，降低誤鎖風險。
-    IP 維度不清空，保留反掃號的保護力。
+    登入成功後清空 email+IP 的桶；測試或關閉時直接略過。
     """
-    if not email:
+    if not email or not _enabled():
         return
-    if not _RATE_LIMIT_ENABLED:
-        return  # 停用時無須清桶
     r = _get_redis()
     await r.delete(_key_email_ip(email, ip))
