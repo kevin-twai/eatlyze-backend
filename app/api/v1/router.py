@@ -2,7 +2,7 @@
 from fastapi import APIRouter
 
 # 匯入所有已定義的 endpoint 模組
-from .endpoints import health, ping, users, auth
+from .endpoints import health, ping, users, auth, meals, nutrition  # ← 新增 meals, nutrition
 
 # === API v1 主路由 ===
 api_router = APIRouter()
@@ -18,3 +18,9 @@ api_router.include_router(users.router, prefix="/users", tags=["users"])
 
 # 認證 / 登入 / Refresh Token
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
+
+# 餐點（受保護）
+api_router.include_router(meals.router, prefix="/meals", tags=["meals"])
+
+# 營養（受保護）
+api_router.include_router(nutrition.router, prefix="/nutrition", tags=["nutrition"])

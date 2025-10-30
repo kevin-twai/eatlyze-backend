@@ -1,0 +1,20 @@
+groups:
+  - name: eatlyze-basic
+    rules:
+      - alert: EatlyzeInstanceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Instance {{ $labels.instance }} down"
+          description: "No scrape data for 1 minute."
+
+      - alert: High5xxRate
+        expr: sum(rate(http_requests_total{status=~"5.."}[1m])) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High 5xx rate"
+          description: "5xx responses detected in the last minute."
