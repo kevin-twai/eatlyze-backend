@@ -10,6 +10,9 @@ from app.core.errors import register_error_handlers
 from app.api.v1.router import api_router
 from app.services.scheduler import lifespan_scheduler  # lifespan（排程）
 
+# ← 新增：掛 Vision 路由
+from app.api.v1.endpoints.vision import router as vision_router
+
 # Monitoring
 import sentry_sdk
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -66,13 +69,15 @@ def create_app() -> FastAPI:
         )
 
     # ---- Prometheus /metrics ----
-    # 直接在 app 物件上掛載 /metrics，不進入 OpenAPI
     Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
     # 統一錯誤處理
     register_error_handlers(app)
 
-    # API 路由
+    # === API 路由 ===
+    # 1) 先掛 Vision（/api/v1/vision/...）
+    app.include_router(vision_router, prefix=settings.API_V1_PREFIX, tags=["vision"])
+    # 2) 其餘 v1 路由
     app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
     # 健康檢查（root & ops）
